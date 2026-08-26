@@ -1,0 +1,50 @@
+btx-data/
+*.log
+faststart.json
+
+# wallet backups — NEVER commit (private keys live here)
+wallet-backup/
+*.dat
+
+# personal receiving address — kept out of the public repo
+address.txt
+
+# our miner: tuned CUDA profile + custom launcher (the "secret sauce") — keep local
+private/
+docker-compose.override.yml
+
+# agent instructions + skill (reference the secret sauce / pc workflow) — keep local
+CLAUDE.md
+.claude/skills/
+
+# personal deploy tooling (has the pc path) — keep local
+sync-pc.sh
+
+# secrets — API keys (Vast, etc.) — NEVER commit
+.env
+.env.*
+!.env.example
+
+# local benchmark output (reproduce with scripts/vast-bench.sh)
+bench-results/
+# root-anchored: the checked-in data/gpu_names_cache.json is a source table, not this cache
+/gpu_names_cache.json
+
+# ---- build artifacts (clean-stack) ----
+dist/
+build/
+build-*/
+*.o
+*.a
+*.metallib
+*-linux-x86_64
+*-macos-arm64
+clean-stack/dist-rel*/
+clean-stack/vast-results/*.log
+clean-stack/bench/vast/refbins/
+
+# python cache (probes / tooling)
+__pycache__/
+*.pyc
+
+*.DS_Store
