@@ -1,351 +1,133 @@
-# matador-miner
+# btxluxminer
 
-![MATADOR - fearless BTX MatMul miner](docs/matador.png)
+**GPU miner for [BTX](https://github.com/btxchain/btx) — MatMul v4 / ENC_RC.**
 
-**A fast, headless GPU miner for [`btxchain/btx`](https://github.com/btxchain/btx) (BTX) -
-the ENC_RC proof-of-work. One static binary. Solo or pool. NVIDIA. Self-updating and
-fleet-ready.**
+A maintained fork of [`vanities/matador-miner`](https://github.com/vanities/matador-miner)
+(MIT, © 2026 AM2 LLC), created after upstream stopped being maintained.
 
-Point it at your own node and keep 100% of every block, or pool-mine against
-[minebtx](https://minebtx.com/) with one flag. It is fully decoupled from the node, so the
-miner can update or restart without ever touching `btxd`.
+---
 
-```bash
-# install + start mining a pool (repeat --pool for automatic failover to a backup):
-curl -fsSL https://raw.githubusercontent.com/vanities/matador-miner/main/install.sh | bash
-matador-miner --mode pool \
-  --pool stratum+tcp://stratum.minebtx.com:3333 \
-  --pool stratum+tcp://stratum.btxbyronbay.com:3335 \
-  --worker rig1 --payoutaddress btx1zcf4z36asua8ylchysphgwfgyfr8267vvznth826epden7lar4fnqvy9gzv
-```
+## Why this fork exists
 
-## Why matador
+Upstream is MIT-licensed and publicly readable, but **as published it cannot be built
+by anyone other than its original author.** A clean clone hits three separate blockers:
 
-- **One static binary.** No toolkit, no drivers beyond the NVIDIA one you already have, no
-  Python. The CUDA backend auto-detects.
-- **Solo *or* pool.** Solo mines against your own `btxd` (`getblocktemplate` -> `submitblock`)
-  and keeps every block self-custodied; pool mode talks stratum to the minebtx and byron pools for
-  steady payouts. Same solver either way.
-- **Self-updating, safely.** Checks GitHub on a schedule and atomically upgrades itself - same
-  PID, no node restart - so a fleet stays current with zero ops. Every update is **sha256-verified
-  before it's swapped in**: a corrupt or tampered download is refused and the miner just keeps
-  running the version it's on. A **bake-time** delay means it won't jump onto a brand-new release
-  until it has aged, so a bad release is caught (on a canary) before the fleet adopts it. Stable
-  channel only, by default; opt out any time.
-- **Fleet-ready.** Run one coordinator (your node + a least-privilege work proxy + a telemetry
-  dashboard) and point any number of disposable rigs at it. They hop on and off, share one
-  wallet, and never collide.
-- **Observable.** A read-only JSON status API (on by default, loopback) for dashboards,
-  watchdogs, and the fleet hub.
+1. The build image `matador-build:pathb-deps` was never pushed to any public registry —
+   `docker build` fails with `pull access denied, repository does not exist`.
+2. `clean-stack/core/CMakeLists.txt` omits `libbtx_matmul_backend.a` from its link list,
+   which is the only archive defining the `matmul_v4::cuda::*` symbols the miner needs.
+3. The `-Dconsteval=constexpr` compatibility flag breaks CUDA's CCCL headers on every
+   publicly available CUDA image.
 
-## Supported hardware
+This fork fixes all three. The build is reproducible from public sources, and every
+change is documented in [BUILDING.md](BUILDING.md).
 
-BTX activated **ENC_RC (v4)** on mainnet. The proof-of-work is now a dense INT8 tensor-core
-workload, which changes what can mine it:
+**Nothing here changes the proof-of-work maths.** The byte-exact gate (`rc_probe`
+printing `5b1bff3c…`) is unchanged and must pass before any release ships.
 
-**NVIDIA, Ampere or newer** (`sm_80` / `86` / `89` / `90` / `120`), single or multi-GPU. That
-is the whole list.
+---
 
-Ampere is a hard floor, not a preference: the work is INT8 matrix multiplication, and a card
-without the units for it is not slow, it is out of the game. Pre-Ampere NVIDIA, Apple Silicon
-and AMD cannot mine BTX, and matador no longer ships builds for them.
+## Drop-in replacement
 
-**Rates.** The v3 rate tables that used to live here have been removed. They were measured
-against a proof-of-work that no longer exists, in a unit (`nonce/s`) the miner no longer
-reports, so republishing them would be misleading. v4 numbers are being collected; see
-[Help wanted](#help-wanted) if you want to contribute one.
-
-The v4 unit of work is the **episode**: one full dependent INT8 matrix chain per nonce. The
-miner reports `ep/s` on its `[stats]` line, and the value is small and fractional by design.
-
-## Quick start
-
-**1. Install** (Linux one-liner: fetches the latest release, verifies the sha256, installs to
-`/usr/local/bin` or `~/.local/bin`):
+btxluxminer keeps matador's runtime interface. If you already run matador, swap the
+binary and keep your existing flags, environment variables and config:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vanities/matador-miner/main/install.sh | bash
+# before
+matador-miner --mode=solo --backend=cuda --payoutaddress=btx1z...
+
+# after — identical
+btxluxminer --mode=solo --backend=cuda --payoutaddress=btx1z...
 ```
 
-This puts `matador-miner` on your `PATH`, so you run it as `matador-miner` from anywhere - no
-`./`. (The `./bin/matador-miner` form further down is only for the un-extracted release bundle.)
+`MATADOR_*` environment variables still work. `matador.json` is still read.
 
-**2. Mine.** The CUDA backend **auto-detects**, so no flag is needed.
+---
+
+## Quick start — solo mining
+
+Point it at your own synced `btxd`:
 
 ```bash
-# Pool - no node required (2nd --pool is a backup; matador fails over if the 1st is down):
-matador-miner --mode pool \
-  --pool stratum+tcp://stratum.minebtx.com:3333 \
-  --pool stratum+tcp://stratum.btxbyronbay.com:3335 \
-  --worker rig1 --payoutaddress btx1zcf4z36asua8ylchysphgwfgyfr8267vvznth826epden7lar4fnqvy9gzv
-
-# Solo - against your own btxd (v0.32.12+, RPC on); keep 100% of every block, no fee:
-matador-miner \
-  --payoutaddress btx1zcf4z36asua8ylchysphgwfgyfr8267vvznth826epden7lar4fnqvy9gzv \
-  --rpccookiefile ~/.btx/.cookie          # or --rpcuser/--rpcpassword
-# solo is the default mode; add --rpcconnect/--rpcport if btxd isn't on 127.0.0.1:19334
+btxluxminer \
+  --mode=solo \
+  --backend=cuda \
+  --solver-threads=1 \
+  --payoutaddress=btx1z...YOUR_ADDRESS \
+  --rpcuser=USER --rpcpassword=PASS \
+  --rpcconnect=127.0.0.1 --rpcport=19334
 ```
 
-You should see a `[stats]` heartbeat within seconds carrying `rc-active=1` and a rising
-`ep/s`. That's it. The examples
-use the project's payout address so they run as-is - **set `--payoutaddress` to your own
-`btx1...` to mine to yourself.**
+Healthy output looks like:
 
-**Prefer a config file?** Copy the template for your GPU and just run it:
-
-```bash
-cp config.example.nvidia.json matador.json
-$EDITOR matador.json                          # set payout address + worker
-matador-miner                                 # auto-loads ./matador.json
+```
+[stats-all] gpus=4/4 ep/s=5.999 acc=0 rej=0 | per-gpu ep/s: 1.500 1.500 1.500 1.500
+[gbt] template height=... prevhash=... bits=... rc-active=1
 ```
 
-## Pools
+- **`ep/s`** is episodes per second — one full ENC_RC episode per nonce. Fractional is
+  normal (~1.5/s on a 5090).
+- **`rc-active=0`** means the RC height never latched. That is a configuration fault,
+  not a slow miner.
+- **`acc`** only ticks when you *win a block*. Solo is lumpy.
 
-Exact, tested URLs (verified with this miner, July 2026). Use them verbatim; repeat `--pool`
-to build a failover chain, matador walks the list top to bottom if one goes down.
+Multi-GPU is automatic — it fans out to every visible device, partitioning work by
+coinbase extranonce and a randomised 64-bit nonce base, so one payout address across
+your own rigs is safe.
 
-| pool | plain TCP | TLS (encrypted) |
-|---|---|---|
-| minebtx | `stratum+tcp://stratum.minebtx.com:3333` | - |
-| byron | `stratum+tcp://stratum.btxbyronbay.com:3335` | - |
+---
 
-URL schemes: `stratum+tcp://` (or a bare `host:port`) is a plain TCP connection.
-`ssl://`, `tls://`, `stratum+ssl://`, and `stratum+tls://` all mean TLS-encrypted
-(v0.8.34+); the port must be the pool's TLS port, they are not interchangeable with the
-plain port. Pool dialect (classic stratum vs login-style) is auto-detected, no flag needed.
+## Hardware
 
-## Install in detail
-
-**Release bundle (recommended).** Each release ships a `*-bundle.tar.gz` with the binary and a
-config template:
-
-```bash
-# matador-miner-<ver>-linux-x86_64-bundle.tar.gz   NVIDIA CUDA (Ampere or newer)
-curl -fsSLO "<bundle-url>" && curl -fsSLO "<bundle-url>.sha256"
-sha256sum -c matador-miner-*-bundle.tar.gz.sha256     # must print OK   (shasum -a 256 on macOS)
-tar xzf matador-miner-*-bundle.tar.gz && cd matador-miner-*/
-cp config.example.nvidia.json matador.json && $EDITOR matador.json
-./bin/matador-miner
-```
-
-**Bare binary.** The one-liner above, or pin/redirect it: `VERSION=v0.4.0 PREFIX=$HOME/.local/bin`
-before the pipe. To verify by hand instead of trusting the script:
-
-```bash
-api=https://api.github.com/repos/vanities/matador-miner/releases
-url=$(curl -fsSL "$api" | grep -oE '"browser_download_url": *"[^"]+linux-x86_64"' | cut -d'"' -f4)
-curl -fsSLO "$url" && curl -fsSLO "$url.sha256"
-sha256sum -c "$(basename "$url").sha256"              # must print OK
-chmod +x "$(basename "$url")" && sudo mv "$(basename "$url")" /usr/local/bin/matador-miner
-matador-miner --help
-```
-
-## HiveOS
-
-Each release ships a HiveOS custom-miner package: `matador-miner-<ver>.tar.gz`. Create a
-flight sheet with miner **Custom**, click **Setup Miner Config**, and fill:
-
-| Field | Value |
+| | |
 |---|---|
-| Miner name | `matador-miner` |
-| Installation URL | `https://github.com/vanities/matador-miner/releases/download/v0.9.28/matador-miner-0.9.28.tar.gz` |
-| Hash algorithm | `btx` |
-| Wallet and worker template | `%WAL%.%WORKER_NAME%` |
-| Pool URL | `stratum+tcp://stratum.minebtx.com:3333` |
-| Pass | `x` |
-| Extra config arguments | optional matador CLI flags, e.g. `--no-gpu-suffix` |
+| **Mining** | NVIDIA Turing and newer. Built for `sm_80;86;89;90;120`. An RTX 3090 (sm_86) mines; the workload's matmul is INT8. |
+| **Driver** | **580+** required. The miner links CUDA 13.0; on older drivers it connects, takes jobs, and never engages the GPU — which looks exactly like unsupported hardware and isn't. |
+| **Not supported** | Pre-Turing. ENC_RC is tensor-core-bound. |
 
-Set the flight sheet wallet to your BTX address (`btx1...`). Ready to import flight sheets,
-one per BTX pool, are in [hiveos/](hiveos/).
+> Validating BTX nodes are a separate question with stricter requirements — that is
+> `btxd`'s ExactReplay path, not this miner.
 
-- Mines on **all GPUs**, one pool worker per card (`rig-gpu0`, `rig-gpu1`, ...). Add
-  `--no-gpu-suffix` to report the whole rig as a single worker, or `--gpus 0,1` to pin cards.
-- The package ships one binary, for Ampere and newer. A rig whose cards are all pre-Ampere
-  cannot mine: `h-run.sh` says so and stops, rather than burning power for nothing.
-- Rate, per-GPU temps, and accepted/rejected shares show up on the HiveOS dashboard; the JSON
-  status API stays available on the rig at `127.0.0.1:4060`.
-- Works with both stratum and login-style pools. Solo-through-pool: use
-  `solo:%WAL%.%WORKER_NAME%` as the template where the pool supports it.
-- TLS pools work from v0.8.53 on: give the Pool URL an `ssl://`, `tls://`, `stratum+ssl://`
-  or `stratum+tls://` scheme, for example `ssl://your-pool.example:443`. Certificates are
-  verified; add `--pool-tls-insecure` for a pool with a self-signed certificate.
-- Under HiveOS the self-updater is off (the flight sheet owns the install). To update, point
-  the Installation URL at the newer release tar.gz and reapply the flight sheet.
+---
 
-## Auto-update
+## Building
 
-On by default: the miner checks GitHub releases at startup and every 30 min, and when a newer
-one ships it downloads the platform binary, verifies its sha256, atomically swaps itself, and
-re-exec's into it **with the same PID and no `btxd` restart**. Works the same under systemd,
-`nohup`, `tmux`, `screen`, or a foreground shell.
+See **[BUILDING.md](BUILDING.md)**. Summary:
 
-> **Requirement:** the binary must live in a path **writable by the user running it**.
-> `install.sh` uses `~/.local/bin` when you're not root, which works out of the box. If you
-> `sudo`-install to `/usr/local/bin` but run as a normal user, the self-update can't replace
-> the file (it logs `cannot replace binary ...` and keeps the old one) - run from a user-owned
-> dir instead, e.g. `~/.local/bin` or an `/opt/matador/bin` you own.
+- Needs a real VM or bare metal, **not a container** — the build runs Docker.
+- Uses `nvidia/cuda:13.3.0-devel-ubuntu24.04`, which carries the pinned **nvcc V13.3.33**.
+  Do not substitute 13.3.1 (V13.3.73) — it breaks the build.
+- CUTLASS v4.6.1 is mandatory. Without it the binary balloons from ~95 MB to ~598 MB.
+- Two gates must pass: byte-exact digest, and an A-B performance comparison with clocks
+  locked.
 
-Tune or disable: `--update-interval-s <sec>` (`0` = startup-only), `--update-channel prerelease`,
-`--min-version-age-s <sec>` (bake time), or `--no-auto-update` (check + notify only). Details in
-[`docs/matador-standalone-ops.md`](docs/matador-standalone-ops.md#auto-update).
+---
 
-## Configure
+## Keeping current
 
-`matador-miner` picks safe defaults for the detected hardware, so there is little to turn:
+BTX ships consensus changes with flag-day activation heights. **A miner that lags a
+flag day produces invalid blocks** — you burn power on a chain nobody accepts.
 
-| Knob (config / flag) | Default | Notes |
-|---|---|---|
-| `gpus` / `--gpus 0,1,2` | first GPU | multi-GPU fan-out; each card gets its own worker suffix + API port |
-| `backend` / `--backend` | auto | `cuda` or `cpu`. Leave it unset. `cpu` runs a reference solver far too slow to mine with. |
-| `pools` / `--pool` | - | one endpoint or an ordered failover list (pool mode) |
+This fork tracks BTX releases and rebuilds against each stock tag. If you are running
+it, watch the release page here as well as BTX's.
 
-Full config keys and the systemd unit are in
-[`docs/matador-standalone-ops.md`](docs/matador-standalone-ops.md). Example config:
-[nvidia](docs/config.example.nvidia.json).
+Current: built against BTX **v0.33.4.2**.
 
-Flags retired with v3 (`--overlap`, `--no-overlap`, `--hip-solver`, and `--backend
-metal|hip|rocm`) are **accepted and ignored** with a warning rather than rejected, so an old
-flight sheet cannot stop a rig from starting. Clean them out when convenient.
-
-Pool: **[minebtx](https://minebtx.com/)** is the default (the examples use
-`stratum+tcp://stratum.minebtx.com:3333`) -
-[live dashboard](https://pool.minebtx.com/) -
-[dexbtx/minebtx source](https://github.com/dexbtx/minebtx). Any dexbtx-style pool works too,
-e.g. [bitminerpool.xyz](https://bitminerpool.xyz/#miners) - just point `--pool` at its stratum
-endpoint.
-
-## Run a fleet
-
-Mine across many machines from one node and one dashboard. A **coordinator** runs your `btxd`
-+ `matador-gbt-proxy` (a least-privilege work proxy: token auth, only `getblocktemplate` /
-`submitblock`) + `matador-hub` (telemetry + dashboard). **Workers** are disposable - no node,
-no chain state - so they hop on and off with zero warmup. They share one payout wallet, and a
-per-rig coinbase extranonce keeps their work disjoint (no duplicate effort), exactly like a
-pool partitions across miners.
-
-```bash
-# on the coordinator:
-FLEET_TOKEN=... NODE_COOKIE=~/.btx/.cookie \
-  HUB_WORKERS="rig1=http://10.0.0.11:4060,rig2=http://10.0.0.12:4060" \
-  scripts/matador-coordinator.sh --listen 10.0.0.1
-# dashboard -> http://10.0.0.1:4070
-# workers   -> matador-miner --mode solo --rpcconnect 10.0.0.1 --rpcport 4071 \
-#                --rpcuser rig1 --rpcpassword "$FLEET_TOKEN" --worker rig1 --payoutaddress btx1...
-```
-
-Workers can also **fall back to a pool** if the coordinator drops (`--fallback-pool ...`) and
-**idle-gate** the GPU so a workstation only mines when it's free (`--should-mine-command ...`).
-Full copy-paste setup (VPN + laptop dashboard, fallback, idle-gate) is in
-**[`docs/matador-fleet.md`](docs/matador-fleet.md)**.
-
-## Monitor
-
-A read-only HTTP status API runs by default on `127.0.0.1:4060` (`--no-api` to disable,
-`--api-listen` to bind a LAN/VPN address). It never exposes RPC credentials or pool passwords.
-
-```bash
-curl -s http://127.0.0.1:4060/health     # {"status":"ok"}
-curl -s http://127.0.0.1:4060/summary    # version, mode, backend, shares, nonces, GPU temp/power, update state
-curl -s http://127.0.0.1:4060/pools      # effective failover pool list
-scripts/matador-status.sh                # readable terminal dashboard over the same API
-```
-
-`/summary` is the one to scrape for a dashboard - shares, `rc_episodes` and the rolling
-`episode_per_s` averages, per-GPU util/power/temp, watchdog state, and the auto-update block
-(running vs latest version). For multi-GPU rigs each child increments the port: `4060`,
-`4061`, ...
-
-Fields worth alerting on:
-
-- **`rate`** - the live episode rate over the last heartbeat (~30s) plus
-  `peak_episode_per_s`, the rig's own demonstrated best (never decays). `rate/peak`
-  sustained well below 1 is a degraded card even though it is "working".
-- **`gpu_health`** - `throttle_reasons` says *why* the card is at its clock
-  (`sw-power-cap` = at its power limit - normal at the cap; `hw-thermal` = cooling
-  problem), and `foreign_procs`/`foreign_mib` report other processes using the GPU. A
-  desktop AI job or stray process silently halves your rate while every miner-side
-  number still looks alive.
-- **`averages.{1h,24h}.pool_credit_ratio`** - episodes the pool *credited* (accepted
-  shares x expected episodes per share) over episodes you *produced*. Healthy is ~0.99
-  (the ~1% dev-fee window credits on its own session). Persistently below ~0.9 over 24h
-  with a real share count means your work is not being paid for - stale-heavy link,
-  mis-set difficulty, or a short-paying pool. The 1h figure swings on share luck; trust
-  24h.
-
-> **Scrapers built against v0.9.9 or earlier need updating.** The v3 throughput fields
-> (`nonce_per_s`, `digest_c_per_s`, `scan_per_s`, the `batched_*` counters and the
-> `validation` object) described a solver that no longer exists and have been replaced by
-> `rc_episodes`, `solve_windows` and `episode_per_s`. A dashboard alerting on "nonces stopped"
-> would page on a perfectly healthy v4 rig.
-
-## Reliability
-
-Pool mode supports ordered `pools[]` failover, a reject-streak watchdog that triggers a safe
-reconnect, optional pool-fallback for solo workers, and a warning-only thermal monitor (it never
-changes clocks, fans, or power limits). A 1% time-based dev fee funds development - the coinbase
-pays the dev address for ~36s of each hour, logged on entry and exit.
-
-The watchdog also distinguishes **dead** from **degraded**:
-
-- **Dead** (wedged CUDA context, fallen-off-the-bus card): no episode progress for 300s while
-  connected and gate-open exits the process non-zero so systemd restarts it with a fresh GPU
-  context - the same fix an operator would apply by hand.
-- **Degraded** (throttling, a foreign process on the GPU, a sick card): episodes keep advancing,
-  so nothing else fires - but the live rate sits below 70% of the rig's own demonstrated peak
-  for 180s. This logs a warning that includes the *why* (NVML throttle reasons and any foreign
-  GPU processes) and sets `watchdog.status` to `warning` in `/summary`. Observe-only: a
-  degraded card is alive, so no restart can fix it. Tune or disable with
-  `MATADOR_WATCHDOG_DEGRADED_PCT` (default 70, `0` disables) and
-  `MATADOR_WATCHDOG_DEGRADED_S` (default 180).
-
-## Trust & self-custody
-
-- **Self-custody.** Solo submits to *your* `btxd` over localhost RPC and holds **no wallet keys**;
-  rewards pay the `--payoutaddress` you provide.
-- **Open source, reproducible.** The full solver is in [`clean-stack/`](clean-stack/); build it
-  yourself with [BUILDING.md](BUILDING.md) and check it against the ENC_RC episode golden. You do
-  not have to take our word for what the binary does. **Verify the sha256** of every download
-  before running it anyway (the bundle and one-liner do this for you). Use `LOG_LEVEL=debug` for
-  troubleshooting.
-- **Loopback by default.** The status API binds `127.0.0.1`; only expose it on a LAN/VPN you
-  control.
-
-## Help wanted
-
-The RTX 5090 is mined first-hand. v4 rates for every other Ampere-or-newer card are unmeasured,
-so a data point genuinely helps:
-
-- **NVIDIA (`sm_80`-`sm_120`):** the `ep/s` value from the `[stats]` line, plus card, driver
-  and whether you ran as root (which enables the built-in GPU tuning).
-
-Easiest way to share: `scripts/matador-status.sh` (or `curl -s .../summary`) prints a clean
-snapshot - open an issue with it plus your OS and driver version.
+---
 
 ## Credits
 
-- **[`btxchain/btx`](https://github.com/btxchain/btx)** - the BTX node, the MatMul proof-of-work,
-  and the ENC_RC proof-of-work this mines.
-- **[`dexbtx/minebtx`](https://github.com/dexbtx/minebtx)** (shib) - the minebtx pool and stratum
-  orchestrator; the protocol reference for the v2/v3 seed + `parent_mtp` handling.
+Original work by [vanities](https://github.com/vanities) / **AM2 LLC**, MIT licensed.
+All of the hard engineering — the ENC_RC solver, the CUDA kernels, the multi-GPU
+fan-out, the byte-exact gating discipline — is theirs. This fork exists to keep that
+work usable and current, not to claim it.
 
-## License
+The MIT licence and copyright notice are retained in [LICENSE](LICENSE), as required.
 
-MIT - Copyright (c) 2026 AM2 LLC. See [LICENSE](LICENSE).
+---
 
-matador-miner was closed-source through v0.9.25 and is now MIT, the same license as
-`btxchain/btx` and its Bitcoin Core lineage, so anything here can be taken upstream or into
-another miner without asking.
+## Licence
 
-The vendored consensus subset under `clean-stack/core/vendor/` keeps its own upstream MIT
-notices; [COPYING](COPYING) holds the text those headers reference. `tinyformat.h` is
-Boost-1.0. Full inventory in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+MIT. See [LICENSE](LICENSE).
 
-## Verifying work
-
-Node operators can independently re-verify a block header, and pool operators can check that
-a submitted share did real work, with `matador-miner --verify`. It replays the episode using
-the same backend the solver uses, so the verifier cannot drift from the code that produced
-the work.
-
-See [docs/verification.md](docs/verification.md) for the commands and how to pull the inputs
-from a node.
+Provided as-is with no warranty. Mining is a lottery; nothing here promises returns.

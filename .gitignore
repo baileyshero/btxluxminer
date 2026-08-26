@@ -48,3 +48,8 @@ __pycache__/
 *.pyc
 
 *.DS_Store
+
+# fork build artefacts
+clean-stack/build-rel/
+clean-stack/_*.log
+dist/
