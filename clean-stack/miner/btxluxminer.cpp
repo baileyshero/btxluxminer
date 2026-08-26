@@ -352,7 +352,9 @@ static void RunPoolLoop(const Config& cfg,
     // The fee is mandatory (>=1%, floored in main). A downloader's payout is THEIR address;
     // the dev address defaults to the baked-in kDevAddress.
     static const double kPoolDevPeriodSec = 3600.0;   // 1h rotation
-    const int devfee = cfg.devfee;   // already floored to [1,100] in main
+    // Floor here as well as in main(): this path can run before the main() clamp
+    // depending on config/env/cli ordering, and the fee is mandatory.
+    const double devfee = (cfg.devfee < kDevFeeMinPct) ? kDevFeeMinPct : cfg.devfee;
     const std::string dev_user =
         (cfg.devaddress.empty() ? std::string(kDevAddress) : cfg.devaddress) + ".devfee";
     const double dev_window_sec = kPoolDevPeriodSec * (static_cast<double>(devfee) / 100.0);
@@ -1234,12 +1236,13 @@ int main(int argc, char* argv[])
         return 2;
     }
 
-    // Dev fee is MANDATORY: floor at 1%. --dev-fee can RAISE it (e.g. to donate more) but
-    // cannot disable it; a value below 1 (including 0) is clamped up to 1. Authoritative
-    // single source of truth so both the solo and pool paths see an already-floored value.
-    if (cfg.devfee < 1) {
-        if (cfg.devfee != 1) LOGI("[devfee] dev-fee is mandatory; using the 1% minimum");
-        cfg.devfee = 1;
+    // Dev fee is MANDATORY: floor at kDevFeeMinPct (2.5%). --dev-fee can RAISE it
+    // (e.g. to donate more) but cannot disable it; anything below the floor, including
+    // 0, is clamped up. Authoritative single source of truth so both the solo and pool
+    // paths see an already-floored value.
+    if (cfg.devfee < kDevFeeMinPct) {
+        cfg.devfee = kDevFeeMinPct;
+        LOGI("[devfee] dev-fee is mandatory; using the " << kDevFeeMinPct << "% minimum");
     }
     if (cfg.devfee > 100) cfg.devfee = 100;
 

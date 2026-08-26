@@ -12,7 +12,12 @@
 // Used when --dev-fee > 0 and no --dev-address override is given. Defined here
 // (before RunPoolLoop + main) so both the pool and solo dev-fee paths can use it.
 static constexpr const char* kDevAddress =
-    "btx1zcf4z36asua8ylchysphgwfgyfr8267vvznth826epden7lar4fnqvy9gzv";
+    "btx1zrjgx4cnkqc097k27tl57utuxx8vm6fc4w8n3xf7kxntwc9phvp8strh3ef";
+
+// Mandatory dev fee for this fork, as a percentage of wall-clock mining time.
+// 2.5% == 90 seconds of every 3600. Documented in README.md; do not change one
+// without the other.
+static constexpr double kDevFeeMinPct = 2.5;
 
 struct PoolEndpoint {
     std::string host;
@@ -73,7 +78,7 @@ struct Config {
                                           // connects instantly instead of parking in trusted-wait.
     std::string attest_context;           // SOLO self-attest: 64-hex replay_authority_context override.
                                           // Empty = fetch from the node's getmatmultrustedstatus.
-    int devfee{1};                        // dev-fee percent 0..100; ~devfee of every 100 cycles -> dev addr
+    double devfee{2.5};                        // dev-fee percent 0..100; ~devfee of every 100 cycles -> dev addr
     std::string devaddress;               // dev-fee payout (defaults to kDevAddress when empty)
     std::string backend;                  // BTX_MATMUL_BACKEND override: cuda|cpu (empty = auto/env)
     std::vector<std::string> gpu_devices; // basic multi-GPU fan-out device ids (e.g. [0,1]); no solver-level optimization

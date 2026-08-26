@@ -92,6 +92,18 @@ static bool SafeParseDouble(const std::string& s, double& out)
 // a bad env value. CLI numeric flags are different: those are an operator AT the
 // keyboard/service file, so they fail LOUDLY with a usage error + clean exit(1)
 // (see CliInt/CliUint64/CliDouble below).
+
+// The fork's dev fee is mandatory and cannot be configured below kDevFeeMinPct
+// (2.5%). Applied at EVERY input path -- json, env, cli -- so no ordering between
+// config load and the main() clamp can leave a lower value in place. Also catches
+// NaN and unparseable input, both of which strtod reports as 0.
+static double ClampDevFee(double v)
+{
+    if (!(v >= kDevFeeMinPct)) return kDevFeeMinPct;   // !(>=) also catches NaN
+    if (v > 100.0) return 100.0;
+    return v;
+}
+
 static int EnvInt(const char* key, const char* raw, int dflt)
 {
     int out = 0;
@@ -457,7 +469,7 @@ static bool LoadConfigFile(const std::string& path, Config& cfg)
     if (ConfigInt(root, {"rc_height", "rc-height"}, i)) { cfg.rc_height = std::max(0, i); ++applied; }
     bump(ConfigString(root, {"attest_key_file", "attest-key-file"}, cfg.attest_key_file));
     bump(ConfigString(root, {"attest_context", "attest-context"}, cfg.attest_context));
-    if (ConfigInt(root, {"devfee", "dev_fee", "dev-fee"}, i)) { cfg.devfee = i; ++applied; }
+    if (ConfigInt(root, {"devfee", "dev_fee", "dev-fee"}, i)) { cfg.devfee = ClampDevFee(static_cast<double>(i)); ++applied; }
     bump(ConfigString(root, {"devaddress", "dev_address", "dev-address"}, cfg.devaddress));
     bump(ConfigString(root, {"backend"}, cfg.backend));
     if (!ConfigGpuDevices(root, cfg, applied)) return false;
@@ -799,12 +811,12 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
     cfg.chain         = GetEnvOr("CHAIN", cfg.chain);
     cfg.devaddress    = GetEnvOr("DEVADDRESS", cfg.devaddress);
     cfg.backend       = GetEnvOr("BTX_MATMUL_BACKEND", cfg.backend);
-    if (const char* v = std::getenv("BTX_GPU_CLK_OFFSET")) { try { cfg.clk_offset = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_CLK_OFFSET=" << v); } }
-    if (const char* v = std::getenv("BTX_GPU_POWER_LIMIT")) { try { cfg.power_limit_w = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_POWER_LIMIT=" << v); } }
-    if (const char* v = std::getenv("BTX_GPU_LOCK_CLOCK")) { try { cfg.lock_gpu_clock = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_LOCK_CLOCK=" << v); } }
-    if (const char* v = std::getenv("BTX_GPU_FAN_PCT")) { try { cfg.fan_pct = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_FAN_PCT=" << v); } }
-    if (const char* v = std::getenv("BTX_GPU_MEM_CLK_OFFSET")) { try { cfg.mem_clk_offset = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_MEM_CLK_OFFSET=" << v); } }
-    if (const char* v = std::getenv("BTX_GPU_LOCK_MEM_CLOCK")) { try { cfg.lock_mem_clock = std::stoi(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_LOCK_MEM_CLOCK=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_CLK_OFFSET")) { try { cfg.clk_offset = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_CLK_OFFSET=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_POWER_LIMIT")) { try { cfg.power_limit_w = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_POWER_LIMIT=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_LOCK_CLOCK")) { try { cfg.lock_gpu_clock = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_LOCK_CLOCK=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_FAN_PCT")) { try { cfg.fan_pct = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_FAN_PCT=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_MEM_CLK_OFFSET")) { try { cfg.mem_clk_offset = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_MEM_CLK_OFFSET=" << v); } }
+    if (const char* v = std::getenv("BTX_GPU_LOCK_MEM_CLOCK")) { try { cfg.lock_mem_clock = std::stod(v); } catch (...) { LOGW("[args] ignoring non-integer BTX_GPU_LOCK_MEM_CLOCK=" << v); } }
     if (const char* g = std::getenv("MATADOR_GPUS")) cfg.gpu_devices = ParseGpuDeviceList(g);
     if (const char* e = std::getenv("MATADOR_GPU_WORKER_SUFFIX")) {
         std::string ev = e;
@@ -828,7 +840,7 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
     // which is how probes/tests get it without a Config). Mirrored into cfg only so --print-config
     // and the startup banner report the value the solver will actually use.
     if (const char* h = std::getenv("BTX_MATMUL_RC_HEIGHT")) cfg.rc_height = std::max(0, EnvInt("BTX_MATMUL_RC_HEIGHT", h, cfg.rc_height));
-    if (const char* d = std::getenv("DEVFEE"))   cfg.devfee = EnvInt("DEVFEE", d, cfg.devfee);
+    if (const char* d = std::getenv("DEVFEE"))   cfg.devfee = ClampDevFee(std::strtod(d, nullptr));
     if (const char* ak = std::getenv("BTX_ATTEST_KEY_FILE")) cfg.attest_key_file = ak;
     if (const char* ac = std::getenv("BTX_ATTEST_CONTEXT"))  cfg.attest_context = ac;
     if (const char* t = std::getenv("MATADOR_SOLVER_THREADS")) cfg.solver_threads = std::max(1, EnvInt("MATADOR_SOLVER_THREADS", t, cfg.solver_threads));
@@ -914,12 +926,12 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
         else if (take(a, "rpcuser", v))       cfg.rpcuser = v;
         else if (take(a, "rpcpassword", v))   cfg.rpcpassword = v;
         else if (take(a, "payoutaddress", v)) cfg.payoutaddress = v;
-        else if (take(a, "clk-offset", v))    { try { cfg.clk_offset = std::stoi(v); } catch (...) { LOGE("[args] --clk-offset wants integer MHz, got: " << v); } }
-        else if (take(a, "power-limit", v))   { try { cfg.power_limit_w = std::stoi(v); } catch (...) { LOGE("[args] --power-limit wants integer watts, got: " << v); } }
-        else if (take(a, "lock-gpu-clock", v)){ try { cfg.lock_gpu_clock = std::stoi(v); } catch (...) { LOGE("[args] --lock-gpu-clock wants integer MHz, got: " << v); } }
-        else if (take(a, "fan-pct", v))       { try { cfg.fan_pct = std::stoi(v); } catch (...) { LOGE("[args] --fan-pct wants integer percent (1..100), got: " << v); } }
-        else if (take(a, "mem-clk-offset", v)){ try { cfg.mem_clk_offset = std::stoi(v); } catch (...) { LOGE("[args] --mem-clk-offset wants integer MHz, got: " << v); } }
-        else if (take(a, "lock-mem-clock", v)){ try { cfg.lock_mem_clock = std::stoi(v); } catch (...) { LOGE("[args] --lock-mem-clock wants integer MHz, got: " << v); } }
+        else if (take(a, "clk-offset", v))    { try { cfg.clk_offset = std::stod(v); } catch (...) { LOGE("[args] --clk-offset wants integer MHz, got: " << v); } }
+        else if (take(a, "power-limit", v))   { try { cfg.power_limit_w = std::stod(v); } catch (...) { LOGE("[args] --power-limit wants integer watts, got: " << v); } }
+        else if (take(a, "lock-gpu-clock", v)){ try { cfg.lock_gpu_clock = std::stod(v); } catch (...) { LOGE("[args] --lock-gpu-clock wants integer MHz, got: " << v); } }
+        else if (take(a, "fan-pct", v))       { try { cfg.fan_pct = std::stod(v); } catch (...) { LOGE("[args] --fan-pct wants integer percent (1..100), got: " << v); } }
+        else if (take(a, "mem-clk-offset", v)){ try { cfg.mem_clk_offset = std::stod(v); } catch (...) { LOGE("[args] --mem-clk-offset wants integer MHz, got: " << v); } }
+        else if (take(a, "lock-mem-clock", v)){ try { cfg.lock_mem_clock = std::stod(v); } catch (...) { LOGE("[args] --lock-mem-clock wants integer MHz, got: " << v); } }
         else if (take(a, "chain", v))         cfg.chain = v;
         // Numeric flags go through CliInt/CliUint64/CliDouble (top of this header):
         // a typo prints a usage error and exit(1)s instead of the old raw
@@ -927,7 +939,7 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
         else if (take(a, "rpcport", v))       { cfg.rpcport = CliInt("rpcport", v); cfg.rpcport_explicit = true; }
         else if (take(a, "maxtries", v))      cfg.maxtries = CliUint64("maxtries", v);
         else if (take(a, "rc-height", v))     cfg.rc_height = std::max(0, CliInt("rc-height", v));
-        else if (take(a, "dev-fee", v))       cfg.devfee = CliInt("dev-fee", v);
+        else if (take(a, "dev-fee", v))       cfg.devfee = ClampDevFee(std::strtod(v.c_str(), nullptr));
         else if (take(a, "dev-address", v))   cfg.devaddress = v;
         else if (take(a, "backend", v))       cfg.backend = v;
         else if (take(a, "gpus", v))          cfg.gpu_devices = ParseGpuDeviceList(v);
