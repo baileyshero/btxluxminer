@@ -42,6 +42,9 @@ btxluxminer --mode=solo --backend=cuda --payoutaddress=btx1z...
 
 `MATADOR_*` environment variables still work. `matador.json` is still read.
 
+> One difference worth knowing before you switch: the dev fee is **2.5%**, where
+> upstream matador was 1%. See [Dev fee](#dev-fee).
+
 ---
 
 ## Quick start — solo mining
@@ -74,6 +77,30 @@ Healthy output looks like:
 Multi-GPU is automatic — it fans out to every visible device, partitioning work by
 coinbase extranonce and a randomised 64-bit nonce base, so one payout address across
 your own rigs is safe.
+
+---
+
+## Dev fee
+
+**2.5%, mandatory.** Time-based, like ethminer / Claymore: for the first 90 seconds of
+each 3600-second period the coinbase pays the fork's address instead of yours. Nothing
+else changes — the odds, the solver and your hashrate are identical in and out of the
+window, and the miner logs every entry and exit:
+
+```
+[devfee] 2.5% (time-based, mandatory): mining to dev address for ~90s of every 3600s
+[devfee] >>> entering dev-fee window (2.5%): coinbase pays dev addr btx1zrjgx4cn...
+```
+
+Fee address: `btx1zrjgx4cnkqc097k27tl57utuxx8vm6fc4w8n3xf7kxntwc9phvp8strh3ef`
+
+`--dev-fee` can **raise** the fee if you want to donate more, but not lower it — values
+below 2.5 are floored. Upstream matador charged 1%; this fork charges 2.5% and that
+funds its maintenance.
+
+The gate is unit-tested (`clean-stack/harness/devfee_window_test.cpp`): the test sweeps
+a full period one second at a time and asserts exactly 90 of 3600 seconds fall inside
+the window. It runs as part of every release build.
 
 ---
 
