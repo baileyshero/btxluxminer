@@ -120,6 +120,12 @@ struct Params {
     BIP9Deployment vDeployments[MAX_VERSION_BITS_DEPLOYMENTS];
     /** Proof of work parameters */
     uint256 powLimit;
+    // BTX 0.33.x inserted these two fields before fPowAllowMinDifficultyBlocks.
+    // LAYOUT IS ABI with libbitcoin_common.a. Omitting them shifted fMatMulPOW
+    // so IsMatMulRCActive always read false: the miner connected, logged
+    // ENC_RC ACTIVATION, then SolveMatMul returned 0 tries (0 ep/s).
+    int32_t nMatMulPowLimitUpgradeHeight{std::numeric_limits<int32_t>::max()};
+    uint256 powLimitUpgrade{};
     bool fPowAllowMinDifficultyBlocks;
     /**
       * Enforce BIP94 timewarp attack mitigation. On testnet4 this also enforces
