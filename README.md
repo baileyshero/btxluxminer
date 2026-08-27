@@ -122,8 +122,10 @@ the window. It runs as part of every release build.
 See **[BUILDING.md](BUILDING.md)**. Summary:
 
 - Needs a real VM or bare metal, **not a container** — the build runs Docker.
-- Uses `nvidia/cuda:13.3.0-devel-ubuntu24.04`, which carries the pinned **nvcc V13.3.33**.
-  Do not substitute 13.3.1 (V13.3.73) — it breaks the build.
+- Uses `nvidia/cuda:13.3.0-devel-ubuntu22.04`, which carries the pinned **nvcc V13.3.33**
+  and links **glibc 2.35** so the binary loads on jammy and vast containers.
+  Do not substitute 13.3.1 (V13.3.73) — it breaks the build. Do not ship a 24.04
+  binary as the Linux release — it records `GLIBC_2.38` and dies on 22.04.
 - CUTLASS v4.6.1 is mandatory. Without it the binary balloons from ~95 MB to ~598 MB.
 - Two gates must pass: byte-exact digest, and an A-B performance comparison with clocks
   locked.
@@ -138,7 +140,10 @@ flag day produces invalid blocks** — you burn power on a chain nobody accepts.
 This fork tracks BTX releases and rebuilds against each stock tag. If you are running
 it, watch the release page here as well as BTX's.
 
-Current: built against BTX **v0.33.4.2**.
+Current: built against BTX **v0.34**. Vendored `Consensus::Params` matches that
+layout, including `nMatMulPowLimitUpgradeHeight` / `powLimitUpgrade` immediately
+after `powLimit`, so a node upgrade does not silently shift `fMatMulPOW` and zero
+hashing.
 
 ---
 

@@ -34,13 +34,16 @@ layered CMake onto a base nobody else has.
 **Fix:** reconstruct the base from NVIDIA's public images. The pinned toolchain is
 CUDA **13.3.33**, and that maps to a specific published tag:
 
-| Docker tag | nvcc version |
+| Docker tag | nvcc / glibc |
 |---|---|
-| `nvidia/cuda:13.3.0-devel-ubuntu24.04` | **V13.3.33** ← the pinned toolchain |
-| `nvidia/cuda:13.3.1-devel-ubuntu22.04` | V13.3.73 (too new — breaks the build) |
+| `nvidia/cuda:13.3.0-devel-ubuntu22.04` | **V13.3.33 / glibc 2.35** ← the release image |
+| `nvidia/cuda:13.3.0-devel-ubuntu24.04` | V13.3.33 / glibc 2.39 — same nvcc, too new for vast containers |
+| `nvidia/cuda:13.3.1-devel-ubuntu22.04` | V13.3.73 — too new, breaks the build |
 
 The patch level matters. `apt install cuda-toolkit-13-3` gives you 13.3.**73**, which
-is *not* what the build expects.
+is *not* what the build expects. The Ubuntu series matters too: a 24.04 binary records
+`GLIBC_2.38` / `GLIBC_2.39` and dies on jammy/vast containers with
+`version 'GLIBC_2.38' not found`. Release binaries are built on **22.04**.
 
 ### 2. matador's link list omits the archive it needs
 
@@ -105,46 +108,47 @@ A machine with:
 ```bash
 # 1. Sources
 mkdir -p ~/git && cd ~/git
-git clone --depth 1 https://github.com/YOURFORK/matador-miner.git
-git clone --depth 1 --branch v0.33.4.2 https://github.com/btxchain/btx.git btx-stock
+git clone --depth 1 https://github.com/baileyshero/btxluxminer.git
+git clone --depth 1 --branch v0.34 https://github.com/btxchain/btx.git btx-034
 git clone --depth 1 --branch v4.6.1 https://github.com/NVIDIA/cutlass.git cutlass461
 
-# 2. Build image  (see Dockerfile below)
-cd ~/git/matador-miner && docker build -t matador-build:pathb-deps-cm4 -f Dockerfile.fork .
+# 2. Release image (Ubuntu 22.04 / glibc 2.35). See Dockerfile.jammy below.
+cd ~/git/btxluxminer && docker build -t btxlux-build:jammy -f Dockerfile.jammy .
 
-# 3. Stock BTX, inside the image so the toolchain matches
-docker run --rm -v ~/git/btx-stock:/btxsrc -w /btxsrc matador-build:pathb-deps-cm4 bash -lc '
+# 3. Stock BTX 0.34, inside the image so the toolchain matches
+docker run --rm -v ~/git/btx-034:/btxsrc -w /btxsrc btxlux-build:jammy bash -lc '
   cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
     -DBTX_ENABLE_CUDA_EXPERIMENTAL=ON -DBTX_CUDA_ARCHITECTURES="80;86;89;90;120" \
     -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF
   cmake --build build -j $(nproc)'
 
-# 4. matador
-cd ~/git/matador-miner/clean-stack
-docker run --rm -e ARCH="80;86;89;90;120" -e VER=v0.9.29 -e JOBS=$(nproc) \
-  -v $PWD:/src -v ~/git/btx-stock/build:/btx -v ~/git/cutlass461:/cutlass:ro \
-  -w /src matador-build:pathb-deps-cm4 bash -lc '
+# 4. miner
+cd ~/git/btxluxminer/clean-stack
+docker run --rm -e ARCH="80;86;89;90;120" -e VER=v0.9.30-btxlux -e JOBS=$(nproc) \
+  -v $PWD:/src -v ~/git/btx-034/build:/btx -v ~/git/cutlass461:/cutlass:ro \
+  -w /src btxlux-build:jammy bash -lc '
     L=/usr/local/cuda/targets/x86_64-linux/lib
-    cmake -B build-rel -S core \
+    cmake -B build-jammy -S core \
       -DMATADOR_ENABLE_CUDA=ON -DMATADOR_CUDA_ARCH="$ARCH" \
       -DMATADOR_MINER_VERSION="$VER" -DCMAKE_BUILD_TYPE=Release \
       -DBTX_ARCHIVE_DIR=/btx -DMATADOR_CUTLASS_DIR=/cutlass \
       -DCMAKE_CXX_FLAGS="-fopenmp" \
       -DCMAKE_CXX_STANDARD_LIBRARIES="-L$L -lcublasLt -lcublas -lcudart -lgomp"
-    cmake --build build-rel --target rc_probe matador-miner --parallel $JOBS
-    ./build-rel/rc_probe'
+    cmake --build build-jammy --target rc_probe btxluxminer --parallel $JOBS
+    ./build-jammy/rc_probe
+    objdump -T ./build-jammy/btxluxminer | grep -oE "GLIBC_[0-9.]+" | sort -u'
 ```
 
 Note what is **absent** from step 4 versus upstream: no `-Dconsteval=constexpr`.
 
 ---
 
-## Dockerfile.fork
+## Dockerfile.jammy (release)
 
-Replaces the unbuildable `Dockerfile.pathb-deps-cm4`.
+Ubuntu 22.04 so the binary links glibc 2.35 and runs on vast containers.
 
 ```dockerfile
-FROM nvidia/cuda:13.3.0-devel-ubuntu24.04
+FROM nvidia/cuda:13.3.0-devel-ubuntu22.04
 # 13.3.0 == nvcc V13.3.33, the pinned toolchain. Do NOT use 13.3.1 (V13.3.73).
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -175,9 +179,13 @@ Verify after building:
 ```
 nvcc  V13.3.33
 cmake 4.3.2
-gcc   13
+gcc   11          # jammy; noble's gcc 13 is fine for a local 24.04 build
+ldd   2.35
 libcublasLt_static.a present
 ```
+
+`Dockerfile.fork` is the same recipe on Ubuntu 24.04. Same nvcc. Do not ship those
+binaries as the Linux release — they will not load on glibc 2.35 hosts.
 
 ---
 
@@ -246,6 +254,7 @@ build.
 - [ ] Binary is ~95 MB. **~598 MB means CUTLASS was missed and cuBLASLt got statically
       linked** — the release path is supposed to refuse, so investigate rather than ship.
 - [ ] Rebuilt against the current stock BTX tag
+- [ ] `objdump -T` glibc symbols cap at `GLIBC_2.35` (no 2.36+)
 - [ ] `sha256sum` published alongside the binary
 
 ### Per-release maintenance
@@ -266,7 +275,7 @@ binary through a missed flag day mines a dead chain. Track BTX releases.
 
 | Upstream | Here | Why |
 |---|---|---|
-| `matador-build:pathb-deps` base | `nvidia/cuda:13.3.0-devel-ubuntu24.04` | upstream base was never published |
+| `matador-build:pathb-deps` base | `nvidia/cuda:13.3.0-devel-ubuntu22.04` | upstream base was never published; jammy keeps glibc 2.35 |
 | `-Dconsteval=constexpr` | omitted | breaks CCCL headers on the public image |
 | 12 BTX archives | 13 (adds `libbtx_matmul_backend.a`) | nothing else defines its symbols |
 | cuBLASLt not linked | linked dynamically, appended last | BTX's backend calls it; link order matters |
