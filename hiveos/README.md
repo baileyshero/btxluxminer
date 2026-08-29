@@ -1,67 +1,42 @@
-# HiveOS flight sheets
+# HiveOS custom miner — btxluxminer 0.9.31
 
-Importable flight sheets for matador-miner on HiveOS. Setup, tuning and troubleshooting
-live in [clean-stack/hiveos/README.md](../clean-stack/hiveos/README.md); this folder is
-just the sheets.
+**This is not a stock HiveOS 20.04 miner.** The binary needs **GLIBC 2.34** (Ubuntu 22.04) and **`libcublasLt.so.13`** (bundled in `lib/`).
 
-One sheet per live pool, re-verified 2026-08-21 (DNS, TCP, and a real stratum
-handshake from a mining rig):
+Stock HiveOS images are still Ubuntu 20.04 / glibc 2.31. They will fail with `version 'GLIBC_2.34' not found`. Use a **HiveOS 22.04** image (`hive-replace --list`) and a driver that can load CUDA 13 (RTX 50: 570+ / 590). There is no glibc-2.31 build: CUDA 13.3 does not target Ubuntu 20.04.
 
-| Sheet | Pool | Transport |
-|---|---|---|
-| [flight-sheet.example.json](flight-sheet.example.json) | minebtx + byron fallback (recommended) | plaintext |
-| [flight-sheet.minebtx.example.json](flight-sheet.minebtx.example.json) | minebtx | plaintext |
-| [flight-sheet.byron.example.json](flight-sheet.byron.example.json) | Byron Pool | plaintext |
-| [flight-sheet.btx-pool.example.json](flight-sheet.btx-pool.example.json) | btx-pool | plaintext |
+## Flight sheet
 
-Set the flight sheet wallet to your own BTX address (`btx1...`) after importing, and bump
-`install_url` to the newest release.
+Miner = **Custom**
 
-## Pool URLs
+| Field | Value |
+|---|---|
+| Miner name | `btxluxminer` |
+| Installation URL | `https://github.com/baileyshero/btxluxminer/releases/download/v0.9.31-btxlux/btxluxminer-0.9.31.tar.gz` |
+| Hash algorithm | `matmul` (informational) |
+| Wallet and worker | `btx1z....%WORKER_NAME%` |
+| Pool URL | your stratum host:port |
+| Extra config | optional CLI flags |
 
-Put the pool's URL in the flight sheet's **Pool URL** field with its scheme intact.
-`ssl://`, `tls://`, `stratum+ssl://` and `stratum+tls://` select TLS; `stratum://`,
-`stratum+tcp://` and a bare `host:port` are plaintext. The miner reads TLS off that scheme
-and nothing else, so dropping it silently downgrades a TLS pool to a plaintext socket
-against a TLS port, and the connection never completes.
-
-Several URLs (space, comma or semicolon separated) become the primary pool plus fallbacks:
+Solo (GBT against a local/remote btxd) — put this in extra config:
 
 ```
-stratum+tcp://stratum.minebtx.com:3333 stratum+tcp://stratum.btxbyronbay.com:3335
+--mode solo --rpcconnect 127.0.0.1 --rpcport 19334 --p2pport 19335
 ```
 
-TLS connections verify the pool's certificate chain and hostname by default. A pool with a
-self-signed or expired certificate needs `--pool-tls-insecure` in **Extra config arguments**.
+Remote Germany-style node: `--rpcconnect <ip> --rpcport 10200 --p2pport 40805` (whatever you mapped).
 
-The stratum dialect (classic `mining.subscribe` vs JSON-RPC `login`) is auto-detected at
-handshake, so no pool needs extra configuration.
+`--no-auto-update` is already injected.
 
-## Verified endpoints (2026-08-21)
+Do not hash until `getblockhash 199300` starts `029041a1`.
 
-Probed from a mining rig: DNS, TCP, and a stratum handshake.
+## Package layout
 
-| Pool | URL | Result |
-|---|---|---|
-| minebtx | `stratum+tcp://stratum.minebtx.com:3333` | **ok** (mined against) |
-| Byron | `stratum+tcp://stratum.btxbyronbay.com:3335` | **ok** (mined against) |
-| btx-pool | `stratum+tcp://btx-pool.com:3334` | **ok** (handshake verified; not yet mined against) |
-| LuckyPool | old `:8660` refused; new `stratum+tls://…lproute.com:8665` | **live but LOCKED to lpminer** - proprietary TLS framed transport, not stratum (see below) |
-| bitminerpool | `stratum.bitminerpool.xyz:3333` | port open, **no stratum response** (dead service) |
-| poolbtx | `poolbtx.com:3333` | connection refused |
-| ninjaraider | `ninjaraider.com:44920/:44921` | connection refused (retired) |
-| btxpool.org | `43.154.101.226:3333` | connection refused |
-| Coin Miners | `eu/us.coin-miners.info:8461` | connection refused |
-
-The July 2026 sheets for the refused pools have been removed: HiveOS retries a dead
-pool forever, and "can't connect" reports kept tracing back to imported sheets pointing
-at endpoints that no longer exist. If one of these pools comes back, its sheet is one
-`git revert` away.
-
-**LuckyPool is a special case.** It did not shut down - it moved its BTX pool to
-`stratum+tls://btx-eu.lproute.com:8665` (and other regions) and put it behind a proprietary,
-certificate-pinned **"BTX transport"** that only their own `lpminer` speaks. matador reaches
-the TLS layer (with `--pool-tls-insecure`, since the cert is self-signed) but the pool drops
-any client that opens with a classic `mining.subscribe`, so matador cannot mine it today.
-Their own flight sheet says as much: *"lpminer is the only miner supported by this BTX-v4
-transport."* Use minebtx or byron with matador; use LuckyPool only with lpminer.
+```
+btxluxminer/
+  btxluxminer
+  lib/libcublasLt.so.13
+  h-manifest.conf
+  h-config.sh
+  h-run.sh
+  h-stats.sh
+```

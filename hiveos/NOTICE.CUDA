@@ -1,0 +1,4 @@
+libcublasLt.so.13 in lib/ is NVIDIA CUDA redistributable, from
+nvidia/cuda:13.3.0-devel-ubuntu22.04, governed by the NVIDIA CUDA Toolkit
+EULA / Deep Learning Container License. Redistributed only as required to
+run btxluxminer. See https://docs.nvidia.com/cuda/eula/
