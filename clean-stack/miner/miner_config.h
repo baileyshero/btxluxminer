@@ -60,6 +60,8 @@ struct Config {
     std::string chain{"main"};            // main|test|regtest (drives SelectParams + default port)
     int rpcport{19334};                   // mainnet default (chainparamsbase.cpp:82)
     bool rpcport_explicit{false};         // true once --rpcport / RPCPORT seen
+    int p2pport{0};                       // 0 until startup fills chain default; --p2pport 0 disables P2P submit
+    bool p2pport_explicit{false};
     std::string datadir;                  // for default cookie path
     std::string rpccookiefile;            // explicit cookie path (overrides datadir/.cookie)
     std::string rpcuser;

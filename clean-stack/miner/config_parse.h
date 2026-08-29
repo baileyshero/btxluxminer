@@ -459,6 +459,7 @@ static bool LoadConfigFile(const std::string& path, Config& cfg)
     bump(ConfigString(root, {"socks5_pass", "socks5-pass"}, cfg.socks5_pass));
     bump(ConfigString(root, {"rpcconnect"}, cfg.rpcconnect));
     if (ConfigInt(root, {"rpcport"}, i)) { cfg.rpcport = i; cfg.rpcport_explicit = true; ++applied; }
+    if (ConfigInt(root, {"p2pport", "p2p_port"}, i)) { cfg.p2pport = i; cfg.p2pport_explicit = true; ++applied; }
     bump(ConfigString(root, {"datadir"}, cfg.datadir));
     bump(ConfigString(root, {"rpccookiefile", "rpc_cookie_file"}, cfg.rpccookiefile));
     bump(ConfigString(root, {"rpcuser"}, cfg.rpcuser));
@@ -631,6 +632,10 @@ static void PrintHelp()
         "                           params + the default RPC port (main 19334, test 29334, regtest 18443)\n"
         "  --rpcconnect=<ip>        btxd host (default 127.0.0.1; env RPCCONNECT)\n"
         "  --rpcport=<port>         btxd RPC port (default per --chain; env RPCPORT)\n"
+        "  --p2pport=<port>         btxd P2P port for solved-block relay (default per --chain;\n"
+        "                           main 19335). Pushes the block as a P2P `block` message before\n"
+        "                           RPC submitblock so it takes the short trusted-wait path.\n"
+        "                           --p2pport 0 disables. env P2PPORT / BTX_SOLO_P2PPORT.\n"
         "  --datadir=<dir>          btxd datadir; cookie read from <dir>/.cookie (env DATADIR)\n"
         "  --rpccookiefile=<path>   explicit cookie file (overrides datadir; env RPCCOOKIEFILE)\n"
         "  --rpcuser=<user>         RPC user (instead of cookie; env RPCUSER)\n"
@@ -835,6 +840,11 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
         if (SafeParseInt(p, port)) { cfg.rpcport = port; cfg.rpcport_explicit = true; }
         else LOGW("[args] ignoring non-integer RPCPORT=\"" << p << "\" (keeping chain default)");
     }
+    if (const char* p = std::getenv("P2PPORT") ? std::getenv("P2PPORT") : std::getenv("BTX_SOLO_P2PPORT")) {
+        int port = 0;
+        if (SafeParseInt(p, port)) { cfg.p2pport = port; cfg.p2pport_explicit = true; }
+        else LOGW("[args] ignoring non-integer P2PPORT=\"" << p << "\" (keeping chain default)");
+    }
     if (const char* m = std::getenv("MAXTRIES")) cfg.maxtries = EnvUint64("MAXTRIES", m, cfg.maxtries);
     // BTX_MATMUL_RC_HEIGHT is ALSO read directly by Consensus::Params (it self-pins at first use,
     // which is how probes/tests get it without a Config). Mirrored into cfg only so --print-config
@@ -937,6 +947,7 @@ static bool ParseArgs(int argc, char* argv[], Config& cfg)
         // a typo prints a usage error and exit(1)s instead of the old raw
         // std::stoi/stoull, which threw -> std::terminate with no explanation.
         else if (take(a, "rpcport", v))       { cfg.rpcport = CliInt("rpcport", v); cfg.rpcport_explicit = true; }
+        else if (take(a, "p2pport", v))       { cfg.p2pport = CliInt("p2pport", v); cfg.p2pport_explicit = true; }
         else if (take(a, "maxtries", v))      cfg.maxtries = CliUint64("maxtries", v);
         else if (take(a, "rc-height", v))     cfg.rc_height = std::max(0, CliInt("rc-height", v));
         else if (take(a, "dev-fee", v))       cfg.devfee = ClampDevFee(std::strtod(v.c_str(), nullptr));

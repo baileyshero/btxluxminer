@@ -124,7 +124,7 @@ docker run --rm -v ~/git/btx-034:/btxsrc -w /btxsrc btxlux-build:jammy bash -lc 
 
 # 4. miner
 cd ~/git/btxluxminer/clean-stack
-docker run --rm -e ARCH="80;86;89;90;120" -e VER=v0.9.30-btxlux -e JOBS=$(nproc) \
+docker run --rm -e ARCH="80;86;89;90;120" -e VER=v0.9.31-btxlux -e JOBS=$(nproc) \
   -v $PWD:/src -v ~/git/btx-034/build:/btx -v ~/git/cutlass461:/cutlass:ro \
   -w /src btxlux-build:jammy bash -lc '
     L=/usr/local/cuda/targets/x86_64-linux/lib

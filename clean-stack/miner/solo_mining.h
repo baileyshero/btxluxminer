@@ -15,12 +15,20 @@
 #include <atomic>          // one-shot warn latch on the v3-dim fallback
 #include <cstdlib>         // getenv (BTX_RC_STRATUM_AUTOLATCH)
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>          // INT32_MAX sentinel on RCActivationHeight()
 #include <mutex>
 #include <random>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 // ===========================================================================
 // 1. Minimal JSON-RPC over HTTP to localhost btxd via libcurl.
@@ -94,11 +102,19 @@ public:
         std::string response;
         long http_code = 0;
 
-        CURL* curl = curl_easy_init();
-        if (curl == nullptr) {
-            LOGE("[rpc] method=" << method << " curl_easy_init failed");
-            throw std::runtime_error("curl_easy_init failed");
+        // Reuse one easy handle per thread so sequential GBT/attest/submitblock
+        // keep the TCP connection to btxd. A fresh curl_easy_init per call was
+        // the matador submit-latency tax (new handshake on every submitblock).
+        static thread_local CURL* t_curl = nullptr;
+        if (t_curl == nullptr) {
+            t_curl = curl_easy_init();
+            if (t_curl == nullptr) {
+                LOGE("[rpc] method=" << method << " curl_easy_init failed");
+                throw std::runtime_error("curl_easy_init failed");
+            }
         }
+        CURL* curl = t_curl;
+        curl_easy_reset(curl);
 
         struct curl_slist* headers = nullptr;
         headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -124,6 +140,9 @@ public:
         // Normal calls (submitblock!) keep the full 120s and are never aborted.
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, longpoll ? 30L : 120L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 0L);
         std::atomic<bool>* lp_abort = longpoll ? m_longpoll_abort.load() : nullptr;
         if (lp_abort != nullptr) {
             // Progress callback fires ~1/s even while the transfer is idle waiting
@@ -140,7 +159,6 @@ public:
         const CURLcode rc = curl_easy_perform(curl);
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
 
         if (rc != CURLE_OK) {
             // NOTE: do not log m_auth/m_auth_b64 (contains the cookie).
@@ -258,6 +276,201 @@ static int DefaultRpcPortForChain(ChainType c)
         default:                 return 19334;
     }
 }
+
+static int DefaultP2PPortForChain(ChainType c)
+{
+    switch (c) {
+        case ChainType::MAIN:    return 19335;
+        case ChainType::TESTNET: return 29335;
+        case ChainType::REGTEST: return 18444;
+        default:                 return 19335;
+    }
+}
+
+// P2P submit of a solved block. RPC submitblock waits on the long trusted-wait
+// path; a P2P `block` message uses the short admission path (matador latency).
+// Fail-open: errors log and return, RPC submitblock still runs.
+static std::string g_p2p_host{"127.0.0.1"};
+static int g_p2p_port{0};
+
+static void InitP2PSubmit(const std::string& host, int port)
+{
+    g_p2p_host = host.empty() ? "127.0.0.1" : host;
+    g_p2p_port = port;
+    if (g_p2p_port > 0) {
+        LOGI("[submit] P2P relay armed " << g_p2p_host << ":" << g_p2p_port
+             << " (solved blocks are pushed as P2P block before RPC submitblock)");
+    } else {
+        LOGI("[submit] P2P relay off (--p2pport 0); RPC submitblock only");
+    }
+}
+
+static void P2PPutU32(std::vector<unsigned char>& v, uint32_t x)
+{
+    v.push_back(static_cast<unsigned char>(x));
+    v.push_back(static_cast<unsigned char>(x >> 8));
+    v.push_back(static_cast<unsigned char>(x >> 16));
+    v.push_back(static_cast<unsigned char>(x >> 24));
+}
+static void P2PPutU64(std::vector<unsigned char>& v, uint64_t x)
+{
+    for (int i = 0; i < 8; ++i) v.push_back(static_cast<unsigned char>(x >> (8 * i)));
+}
+static void P2PPutU16BE(std::vector<unsigned char>& v, uint16_t x)
+{
+    v.push_back(static_cast<unsigned char>(x >> 8));
+    v.push_back(static_cast<unsigned char>(x));
+}
+
+static std::vector<unsigned char> EncodeP2P(const char* cmd, const std::vector<unsigned char>& payload)
+{
+    std::vector<unsigned char> out;
+    out.reserve(24 + payload.size());
+    const auto& magic = Params().MessageStart();
+    out.insert(out.end(), magic.begin(), magic.end());
+    char padded[12] = {};
+    std::strncpy(padded, cmd, 12);
+    out.insert(out.end(), padded, padded + 12);
+    P2PPutU32(out, static_cast<uint32_t>(payload.size()));
+    const uint256 chk = Hash(payload);
+    out.insert(out.end(), chk.begin(), chk.begin() + 4);
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+static bool P2PSendAll(int fd, const unsigned char* p, size_t n)
+{
+    while (n) {
+        const ssize_t w = ::send(fd, p, n, MSG_NOSIGNAL);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        p += static_cast<size_t>(w);
+        n -= static_cast<size_t>(w);
+    }
+    return true;
+}
+
+static void SubmitBlockP2P(const std::vector<unsigned char>& raw, int32_t height)
+{
+    if (g_p2p_port <= 0 || raw.empty()) return;
+    Timer sp;
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        LOGW("[submit] p2p socket: " << strerror(errno));
+        return;
+    }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    timeval tv{2, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(g_p2p_port));
+    if (::inet_pton(AF_INET, g_p2p_host.c_str(), &addr.sin_addr) != 1) {
+        LOGW("[submit] p2p inet_pton failed for " << g_p2p_host);
+        ::close(fd);
+        return;
+    }
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        LOGW("[submit] p2p connect " << g_p2p_host << ":" << g_p2p_port << " " << strerror(errno)
+             << " (RPC submitblock still runs)");
+        ::close(fd);
+        return;
+    }
+
+    std::vector<unsigned char> ver;
+    P2PPutU32(ver, 800002);
+    P2PPutU64(ver, 1ull | 8ull | 1024ull);
+    P2PPutU64(ver, static_cast<uint64_t>(std::time(nullptr)));
+    auto netaddr = [&](uint64_t svc, const char* ip, uint16_t port) {
+        P2PPutU64(ver, svc);
+        ver.insert(ver.end(), 10, 0);
+        ver.push_back(0xff);
+        ver.push_back(0xff);
+        in_addr a{};
+        inet_pton(AF_INET, ip, &a);
+        const uint32_t n = a.s_addr;
+        const unsigned char* np = reinterpret_cast<const unsigned char*>(&n);
+        ver.insert(ver.end(), np, np + 4);
+        P2PPutU16BE(ver, port);
+    };
+    netaddr(1, g_p2p_host.c_str(), static_cast<uint16_t>(g_p2p_port));
+    netaddr(1ull | 8ull | 1024ull, "0.0.0.0", 0);
+    P2PPutU64(ver, 0x424c585355424d49ull);
+    const char* ua = "/btxluxminer:0.9.31/";
+    const auto ual = std::strlen(ua);
+    ver.push_back(static_cast<unsigned char>(ual));
+    ver.insert(ver.end(), ua, ua + ual);
+    P2PPutU32(ver, static_cast<uint32_t>(std::max(0, height)));
+    ver.push_back(1);
+
+    auto framed = EncodeP2P("version", ver);
+    if (!P2PSendAll(fd, framed.data(), framed.size())) {
+        ::close(fd);
+        return;
+    }
+
+    std::vector<unsigned char> buf;
+    unsigned char tmp[4096];
+    bool got_ver = false, got_va = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline && !(got_ver && got_va)) {
+        const ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            break;
+        }
+        if (n == 0) break;
+        buf.insert(buf.end(), tmp, tmp + n);
+        const auto& magic = Params().MessageStart();
+        while (buf.size() >= 24) {
+            if (!(buf[0] == magic[0] && buf[1] == magic[1] && buf[2] == magic[2] && buf[3] == magic[3])) {
+                buf.erase(buf.begin());
+                continue;
+            }
+            const uint32_t ln = uint32_t(buf[16]) | (uint32_t(buf[17]) << 8) |
+                                (uint32_t(buf[18]) << 16) | (uint32_t(buf[19]) << 24);
+            if (ln > 4u * 1024u * 1024u) {
+                buf.clear();
+                break;
+            }
+            if (buf.size() < 24 + ln) break;
+            char cmd[13] = {};
+            std::memcpy(cmd, buf.data() + 4, 12);
+            std::vector<unsigned char> payload(buf.begin() + 24, buf.begin() + 24 + static_cast<std::ptrdiff_t>(ln));
+            buf.erase(buf.begin(), buf.begin() + 24 + static_cast<std::ptrdiff_t>(ln));
+            if (std::strcmp(cmd, "version") == 0) {
+                auto va = EncodeP2P("verack", {});
+                P2PSendAll(fd, va.data(), va.size());
+                got_ver = true;
+            } else if (std::strcmp(cmd, "verack") == 0) {
+                got_va = true;
+            } else if (std::strcmp(cmd, "ping") == 0) {
+                auto pong = EncodeP2P("pong", payload);
+                P2PSendAll(fd, pong.data(), pong.size());
+            }
+        }
+    }
+    if (!(got_ver && got_va)) {
+        LOGW("[submit] p2p handshake incomplete h=" << height << " in " << sp.ms() << "ms");
+        ::close(fd);
+        return;
+    }
+    auto blk = EncodeP2P("block", raw);
+    const bool sent = P2PSendAll(fd, blk.data(), blk.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ::close(fd);
+    if (sent) {
+        LOGI("[submit] p2p BLOCK h=" << height << " bytes=" << raw.size()
+             << " via " << g_p2p_host << ":" << g_p2p_port << " in " << sp.ms() << "ms");
+    } else {
+        LOGW("[submit] p2p send failed h=" << height);
+    }
+}
+
 
 // ===========================================================================
 // 3. Build the coinbase transaction from GBT fields.
@@ -754,6 +967,12 @@ static std::filesystem::path UnsubmittedDir()
     return std::filesystem::path(home ? home : ".") / ".local/share/matador-miner/unsubmitted";
 }
 
+static void ClearParkedBlock(int32_t height, const std::string& hash)
+{
+    std::error_code ec;
+    std::filesystem::remove(UnsubmittedDir() / (std::to_string(height) + "-" + hash + ".hex"), ec);
+}
+
 static void ParkUnsubmittedBlock(int32_t height, const std::string& hash, const std::string& hex)
 {
     std::error_code ec;
@@ -992,6 +1211,13 @@ static bool SolveAndSubmit(RpcClient& rpc,
          << " nonce64=" << block.nNonce64
          << " serialized_bytes=" << ss.size());
 
+    // Park FIRST so a crash mid-submit cannot lose the only copy (h=186889).
+    ParkUnsubmittedBlock(static_cast<int32_t>(meta.height), block_hash, block_hex);
+    // P2P BLOCK uses the short trusted-wait path. RPC submitblock still follows.
+    if (const auto raw = TryParseHex<unsigned char>(block_hex)) {
+        SubmitBlockP2P(*raw, static_cast<int32_t>(meta.height));
+    }
+
     // NO pre-staging is possible for a fresh solve (both proven live 2026-08-11):
     // submitheader is REFUSED on MatMul chains ("submit full blocks with
     // submitblock", h=186858), and the node rejects attestations for blocks it
@@ -1040,6 +1266,13 @@ static bool SolveAndSubmit(RpcClient& rpc,
             ok = submit_once(why);
         }
         if (ok) break;
+        // P2P relay may have already connected the block; RPC then returns duplicate.
+        if (why.find("duplicate") != std::string::npos &&
+            why.find("duplicate-invalid") == std::string::npos) {
+            LOGI("[submit] duplicate h=" << meta.height << " -- already in the chain");
+            ok = true;
+            break;
+        }
         // Retryable: curl transport errors, http-level failures (503 while the
         // supervisor respawns btxd; 401 self-heals inside Call but a failed refresh
         // mid-respawn surfaces here), and RPC warmup (code -28: "Loading wallet...",
@@ -1065,6 +1298,7 @@ static bool SolveAndSubmit(RpcClient& rpc,
              << " hash=" << block_hash
              << " nonce64=" << block.nNonce64
              << " solve_ms=" << solve_ms << " submit_ms=" << sub_sp.ms());
+        ClearParkedBlock(static_cast<int32_t>(meta.height), block_hash);
         return true;
     }
 

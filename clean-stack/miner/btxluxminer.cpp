@@ -1378,6 +1378,9 @@ int main(int argc, char* argv[])
     if (!cfg.rpcport_explicit) {
         cfg.rpcport = DefaultRpcPortForChain(chain_type);
     }
+    if (!cfg.p2pport_explicit) {
+        cfg.p2pport = DefaultP2PPortForChain(chain_type);
+    }
 
     // Default: discover every GPU and mine on all of them (opt out by pinning an explicit list).
     MaybeAutoDetectGpus(cfg);
@@ -1873,6 +1876,7 @@ int main(int argc, char* argv[])
     // Solo self-attest (trusted-mirror nodes): arm the in-process signer so our own
     // solved blocks carry their 1-of-1 quorum into submitblock (see solo_mining.h).
     InitSelfAttest(rpc, cfg.attest_key_file, cfg.attest_context);
+    InitP2PSubmit(cfg.rpcconnect, cfg.p2pport);
 
     // ---- stats heartbeat thread (~30s) ----
     // Rate comes from the LIVE solve counters (ProbeMatMulSolvePipelineStats, pow.h) so it
