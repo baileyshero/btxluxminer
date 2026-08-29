@@ -354,9 +354,17 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../miner/btxluxminer.cpp)
   # copy cannot interpose on libcurl's.
   set(OPENSSL_USE_STATIC_LIBS TRUE)
   find_package(OpenSSL REQUIRED)
-  set(MINER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../miner/btxluxminer.cpp)
+  set(MINER_SOURCES
+      ${CMAKE_CURRENT_SOURCE_DIR}/../miner/btxluxminer.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/../miner/btx_gpu_stubs.cpp)
   add_executable(btxluxminer ${MINER_SOURCES})
   target_link_libraries(btxluxminer PRIVATE matador_core CURL::libcurl Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+  find_package(OpenMP)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(btxluxminer PRIVATE OpenMP::OpenMP_CXX)
+  else()
+    target_link_libraries(btxluxminer PRIVATE gomp)
+  endif()
   # Static libstdc++/libgcc for the same portability reason: built on Ubuntu 22.04 the binary
   # otherwise demands GLIBCXX_3.4.30, which Ubuntu 20.04 (max 3.4.28) cannot satisfy. Costs a few
   # MB and removes a whole class of "works on my distro" failures. Not on Apple, where the system
@@ -374,7 +382,8 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../miner/btxluxminer.cpp)
     # matador_core is linked FIRST (above), so its vendored uint256/sha256/Span win the byte-identical
     # dups against btx's pow.cpp by link order on either linker.
     set(BTX_ARCHIVES
-      ${BTX_ARCHIVE_DIR}/lib/libbtx_matmul_backend.a
+      # libbtx_matmul_backend.a omitted: node's cuBLASLt GEMM (~500 MB).
+      # Miner ENC_RC is CUTLASS in matador_core; GPU row-leaf is stubbed.
     ${BTX_ARCHIVE_DIR}/lib/libbitcoin_common.a
       ${BTX_ARCHIVE_DIR}/lib/libbitcoin_shielded.a
       ${BTX_ARCHIVE_DIR}/lib/libbitcoin_db.a
